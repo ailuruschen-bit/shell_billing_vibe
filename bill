@@ -1,31 +1,32 @@
 #!/usr/bin/env bash
-# bill - 一个可爱又实用的命令行记账小工具 🐷💰
+# bill - a cute and practical CLI bookkeeping tool 🐷💰
 #
-# 设计目标：
-# - 仅依赖 bash + 常见系统工具（awk/date/mkdir）
-# - 通过 shebang 明确使用 bash：即使你的默认 shell 是 zsh，也能直接运行
-# - 数据保存在本机：默认 ~/.bill/ （可用 BILL_HOME 自定义）
+# Design goals:
+# - Bash only + common Unix tools (awk/date/mkdir)
+# - Force bash via shebang (works even if your default shell is zsh)
+# - Local storage by default: ~/.bill/ (override via BILL_HOME)
 #
-# 用法：
-#   bill <+/-money> <comment>
+# Usage:
+#   bill <+/-money> <comment...> [MM/dd]
 #   bill mod <money>
 #   bill show
-#   bill ?
+#   bill show all
+#   bill help | bill \? | bill --help
 
 set -euo pipefail
 
 # -------------------------
-# 基础配置（可通过环境变量覆盖）
+# Basic configuration (override via env vars)
 # -------------------------
 DATA_DIR="${BILL_HOME:-"$HOME/.bill"}"
 BAL_FILE="$DATA_DIR/balance"
 LEDGER_FILE="$DATA_DIR/ledger.tsv"
-BIG_SPEND="${BILL_BIG_SPEND:-500}"   # “大笔花钱”提醒阈值（默认 500）
-SHOW_TAIL="${BILL_SHOW_TAIL:-10}"    # show 时展示最近 N 条
+BIG_SPEND="${BILL_BIG_SPEND:-500}"   # big-spend warning threshold (default: 500)
+SHOW_TAIL="${BILL_SHOW_TAIL:-10}"    # how many recent entries to show in `bill show`
 LEDGER_HEADER=$'date\ttime\tamount\tcomment\tbalance\n'
 
 # -------------------------
-# 颜色与可爱输出
+# Colors & cute output
 # -------------------------
 supports_color() {
   [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]]
@@ -49,13 +50,13 @@ fi
 say() { printf "%b\n" "$*"; }
 
 die() {
-  say "${C_RED}${C_BOLD}哎呀出错啦：${C_RESET}${C_RED}$*${C_RESET}"
-  say "${C_DIM}提示：输入 ${C_BOLD}bill ?${C_RESET}${C_DIM} 查看用法哦～${C_RESET}"
+  say "${C_RED}${C_BOLD}Oops: ${C_RESET}${C_RED}$*${C_RESET}"
+  say "${C_DIM}Tip: run ${C_BOLD}bill help${C_RESET}${C_DIM} (or ${C_BOLD}bill \\?${C_RESET}${C_DIM}) for usage.${C_RESET}"
   exit 1
 }
 
 random_pick() {
-  # 从传入的参数中随机选一个
+  # Pick one string randomly from args
   local count=$#
   (( count > 0 )) || return 0
   local idx=$(( RANDOM % count + 1 ))
@@ -63,7 +64,7 @@ random_pick() {
 }
 
 fmt_money() {
-  # 统一显示为两位小数
+  # Always print as 2 decimals
   awk -v x="$1" 'BEGIN{printf "%.2f", x+0}'
 }
 
@@ -72,7 +73,7 @@ is_number() {
 }
 
 is_signed_number() {
-  # 记账格式要求必须带 + 或 -
+  # For entries we require an explicit + or -
   [[ "$1" =~ ^[+-][0-9]+([.][0-9]+)?$ ]]
 }
 
@@ -82,7 +83,7 @@ ensure_data() {
     printf "0\n" >"$BAL_FILE"
   fi
 
-  # 账本文件：自动创建 / 自动迁移旧格式（time/amount/comment/balance）
+  # Ledger file: auto-create / auto-migrate legacy format (time/amount/comment/balance)
   if [[ ! -f "$LEDGER_FILE" ]]; then
     printf "%s" "$LEDGER_HEADER" >"$LEDGER_FILE"
     return 0
@@ -91,7 +92,7 @@ ensure_data() {
   local hdr
   IFS= read -r hdr <"$LEDGER_FILE" || hdr=""
   if [[ "$hdr" == $'time\tamount\tcomment\tbalance' ]]; then
-    # 旧格式迁移到：date	time	amount	comment	balance
+    # Migrate legacy format to: date	time	amount	comment	balance
     local ts bak tmp
     ts="$(date "+%Y%m%d-%H%M%S")"
     bak="$LEDGER_FILE.bak-$ts"
@@ -141,7 +142,7 @@ is_mmdd() {
 }
 
 mmdd_to_ymd() {
-  # 将 MM/dd 补全年份（默认用当前年份）
+  # Expand MM/dd with the current year -> YYYY-MM-DD
   local mmdd="$1"
   local y
   y="$(date "+%Y")"
@@ -158,7 +159,7 @@ join_by_space() {
 }
 
 recalc_balances() {
-  # 重算全账本的 balance 列 + 更新 balance 文件
+  # Recalculate the balance column for all rows + refresh balance file
   ensure_data
   local ts tmp
   ts="$(date "+%Y%m%d-%H%M%S")"
@@ -179,7 +180,7 @@ recalc_balances() {
     }
   ' "$LEDGER_FILE" >>"$tmp"
 
-  # 更新总余额 = 最后一行 balance（没有记录则为 0）
+  # Update total balance = last row's balance (or 0 if empty)
   local final
   final="$(awk -F'\t' 'NR==1{next} {x=$5} END{if(NR==1) x=0; printf "%.2f", x+0}' "$tmp")"
   mv "$tmp" "$LEDGER_FILE"
@@ -187,47 +188,47 @@ recalc_balances() {
 }
 
 usage() {
-  say "${C_CYAN}${C_BOLD}bill 命令行记账小工具${C_RESET}  ${C_DIM}(数据默认保存到 $DATA_DIR)${C_RESET}"
+  say "${C_CYAN}${C_BOLD}bill - CLI bookkeeping tool${C_RESET}  ${C_DIM}(data dir: $DATA_DIR)${C_RESET}"
   say ""
-  say "${C_BOLD}用法：${C_RESET}"
-  say "  ${C_GREEN}bill <+/-money> <comment> [MM/dd]${C_RESET}   记一笔账（例如：bill -12.5 奶茶快乐 05/13）"
-  say "  ${C_YELLOW}bill mod <money>${C_RESET}            直接修改总余额（例如：bill mod 2000）"
-  say "  ${C_BLUE}bill show${C_RESET}                   查看资产与最近记录"
-  say "  ${C_BLUE}bill show all${C_RESET}               按月翻页查看全部历史（可删/改）"
-  say "  ${C_MAGENTA}bill help${C_RESET}                   查看帮助（zsh 下更推荐）"
-  say "  ${C_MAGENTA}bill \\?${C_RESET}                     查看帮助（zsh 里 ? 需要转义）"
-  say "  ${C_MAGENTA}bill doctor${C_RESET}                 环境自检（排查“命令失效/无法执行”）"
+  say "${C_BOLD}Usage:${C_RESET}"
+  say "  ${C_GREEN}bill <+/-money> <comment...> [MM/dd]${C_RESET}   Add an entry (e.g. bill -12.5 \"milk tea\" 05/13)"
+  say "  ${C_YELLOW}bill mod <money>${C_RESET}                         Set total balance directly (e.g. bill mod 2000)"
+  say "  ${C_BLUE}bill show${C_RESET}                                Summary + recent entries"
+  say "  ${C_BLUE}bill show all${C_RESET}                            Monthly pager for all history (edit/delete)"
+  say "  ${C_MAGENTA}bill help${C_RESET}                                Show help (recommended for zsh)"
+  say "  ${C_MAGENTA}bill \\?${C_RESET}                                  Show help (? needs escaping in zsh)"
+  say "  ${C_MAGENTA}bill doctor${C_RESET}                              Environment self-check"
   say ""
-  say "${C_DIM}小贴士：你可以设置大额支出提醒阈值：export BILL_BIG_SPEND=1000${C_RESET}"
-  say "${C_DIM}        也可以自定义数据目录：export BILL_HOME=~/.mybill${C_RESET}"
+  say "${C_DIM}Tips: export BILL_BIG_SPEND=1000   # big-spend warning threshold${C_RESET}"
+  say "${C_DIM}      export BILL_HOME=~/.mybill   # custom data dir${C_RESET}"
 }
 
 cheer_for_income() {
   random_pick \
-    "太棒啦！${C_GREEN}+进账${C_RESET} 你离小目标又近一步～" \
-    "哇哦，收入到帐！钱包表示：${C_GREEN}舒坦${C_RESET} 😌" \
-    "这笔加得好！今天也是会理财的小天才～"
+    "Nice! ${C_GREEN}Income added${C_RESET} — one step closer to your goal." \
+    "Cha-ching! ${C_GREEN}Money in${C_RESET}. Your wallet feels happier already." \
+    "Great move — tracking income is a superpower."
 }
 
 comfort_for_spend_small() {
   random_pick \
-    "记下来了～小支出也要认真对待，你很棒！" \
-    "花钱不可怕，乱花才可怕！你在掌控它～" \
-    "消费已登记✅ 继续稳稳攒钱～"
+    "Logged it ✅ Small spends count too — nice discipline." \
+    "Spending isn't scary; untracked spending is. You're in control." \
+    "Recorded! Keep stacking those savings steadily."
 }
 
 warn_for_big_spend() {
   random_pick \
-    "呜哇…这笔有点大！先深呼吸：${C_YELLOW}真的需要吗？${C_RESET}（不过记账就是胜利！）" \
-    "钱包发来提醒：${C_RED}大额支出警报${C_RESET} 🚨 记得复盘一下哦～" \
-    "这一笔挺豪气！下次也许可以等个折扣？你一定行～"
+    "Whoa… that's a big one. ${C_YELLOW}Do you really need it?${C_RESET} (Still: tracking wins!)" \
+    "Wallet alert: ${C_RED}big spend detected${C_RESET}. Maybe do a quick review later." \
+    "Bold purchase! Next time maybe wait for a discount — you got this."
 }
 
 pep_talk() {
   random_pick \
-    "攒钱不是苦行，是给未来的自己送礼物～" \
-    "每天进步一点点，余额会替你开心！" \
-    "你在做长期主义最酷的事：掌控生活的现金流。"
+    "Saving isn't punishment — it's a gift to your future self." \
+    "Tiny progress every day. Your balance will thank you." \
+    "You're doing the coolest long-game thing: owning your cashflow."
 }
 
 cmd_add() {
@@ -236,16 +237,16 @@ cmd_add() {
   d="$(date "+%Y-%m-%d")"
   t="$(date "+%H:%M:%S")"
 
-  # 支持：bill <+/-money> <comment...> [MM/dd]
-  # 规则：如果最后一个参数是 MM/dd，则视为日期；其余拼成 comment
+  # Supports: bill <+/-money> <comment...> [MM/dd]
+  # Rule: if the last arg is MM/dd, treat it as date; the rest becomes comment
   local args=("$@")
   local argc="${#args[@]}"
   if (( argc == 0 )); then
-    die "请写点备注呀～例如：bill -18 午饭"
+    die "Please add a comment. Example: bill -18 lunch"
   fi
   if is_mmdd "${args[$((argc-1))]}"; then
     if (( argc == 1 )); then
-      die "备注不能空哦～例如：bill -18 午饭 05/13"
+      die "Comment cannot be empty. Example: bill -18 lunch 05/13"
     fi
     d="$(mmdd_to_ymd "${args[$((argc-1))]}")"
     cmt="$(join_by_space "${args[@]:0:$((argc-1))}")"
@@ -253,8 +254,8 @@ cmd_add() {
     cmt="$(join_by_space "${args[@]}")"
   fi
 
-  [[ -n "$cmt" ]] || die "请写点备注呀～例如：bill -18 午饭"
-  is_signed_number "$amt" || die "金额格式需要带 + 或 -，例如：+100 或 -12.5"
+  [[ -n "$cmt" ]] || die "Please add a comment. Example: bill -18 lunch"
+  is_signed_number "$amt" || die "Amount must start with + or -. Examples: +100 or -12.5"
 
   local bal newbal absamt
   bal="$(read_balance)"
@@ -265,26 +266,26 @@ cmd_add() {
   absamt="$(awk -v a="$amt" 'BEGIN{a+=0; if(a<0)a=-a; printf "%.2f", a}')"
 
   if [[ "$amt" == +* ]]; then
-    say "${C_GREEN}${C_BOLD}✔ 记账成功${C_RESET}  ${C_GREEN}${amt}${C_RESET}  ${C_DIM}(${cmt})${C_RESET}"
+    say "${C_GREEN}${C_BOLD}✔ Saved${C_RESET}  ${C_GREEN}${amt}${C_RESET}  ${C_DIM}(${cmt})${C_RESET}"
     say "$(cheer_for_income)"
   else
-    # 支出：判断是否大额
+    # Expense: warn if it's big
     if awk -v a="$absamt" -v t="$BIG_SPEND" 'BEGIN{exit !(a>=t)}'; then
-      say "${C_RED}${C_BOLD}✔ 记账成功${C_RESET}  ${C_RED}${amt}${C_RESET}  ${C_DIM}(${cmt})${C_RESET}"
+      say "${C_RED}${C_BOLD}✔ Saved${C_RESET}  ${C_RED}${amt}${C_RESET}  ${C_DIM}(${cmt})${C_RESET}"
       say "$(warn_for_big_spend)"
     else
-      say "${C_YELLOW}${C_BOLD}✔ 记账成功${C_RESET}  ${C_YELLOW}${amt}${C_RESET}  ${C_DIM}(${cmt})${C_RESET}"
+      say "${C_YELLOW}${C_BOLD}✔ Saved${C_RESET}  ${C_YELLOW}${amt}${C_RESET}  ${C_DIM}(${cmt})${C_RESET}"
       say "$(comfort_for_spend_small)"
     fi
   fi
 
-  say "${C_CYAN}当前余额：${C_BOLD}$(fmt_money "$newbal")${C_RESET} ${C_DIM}(继续加油！)${C_RESET}"
+  say "${C_CYAN}Current balance: ${C_BOLD}$(fmt_money "$newbal")${C_RESET} ${C_DIM}(keep going!)${C_RESET}"
 }
 
 cmd_mod() {
   local m="${1:-}"
-  [[ -n "$m" ]] || die "用法：bill mod <money> 例如：bill mod 2000"
-  is_number "$m" || die "余额需要是数字，例如：2000 或 1999.5"
+  [[ -n "$m" ]] || die "Usage: bill mod <money>  e.g. bill mod 2000"
+  is_number "$m" || die "Balance must be a number, e.g. 2000 or 1999.5"
 
   local newbal oldbal d t
   d="$(date "+%Y-%m-%d")"
@@ -292,9 +293,9 @@ cmd_mod() {
   oldbal="$(read_balance)"
   newbal="$(fmt_money "$m")"
   write_balance "$newbal"
-  append_ledger "$d" "$t" "MOD" "手动修改余额" "$newbal"
+  append_ledger "$d" "$t" "MOD" "Manual balance override" "$newbal"
 
-  say "${C_MAGENTA}${C_BOLD}✿ 余额已修改${C_RESET}  ${C_DIM}${oldbal} → ${C_BOLD}${newbal}${C_RESET}"
+  say "${C_MAGENTA}${C_BOLD}✿ Balance updated${C_RESET}  ${C_DIM}${oldbal} → ${C_BOLD}${newbal}${C_RESET}"
   say "$(pep_talk)"
 }
 
@@ -303,7 +304,7 @@ cmd_show() {
   local bal
   bal="$(read_balance)"
 
-  # 统计收入/支出
+  # Summary stats
   local stats
   stats="$(awk -F'\t' '
     NR==1{next}
@@ -323,21 +324,20 @@ cmd_show() {
   spend="$(cut -f2 <<<"$stats")"
   n="$(cut -f3 <<<"$stats")"
 
-  # 与 show all 统一：使用固定宽度 box，避免中英文宽度导致右边框错位
+  # Same box renderer as `show all` (fixes alignment for CJK characters)
   printf "%b" "${C_CYAN}${C_BOLD}"; box_top; printf "%b" "${C_RESET}"
-  printf "%b" "${C_CYAN}${C_BOLD}"; box_line "你的钱包小面板"; printf "%b" "${C_RESET}"
-  printf "%b" "${C_CYAN}${C_BOLD}"; box_line "当前余额：$(fmt_money "$bal")"; printf "%b" "${C_RESET}"
-  printf "%b" "${C_CYAN}${C_BOLD}"; box_line "总收入：  $(fmt_money "$inc")"; printf "%b" "${C_RESET}"
-  printf "%b" "${C_CYAN}${C_BOLD}"; box_line "总支出：  $(fmt_money "$spend")"; printf "%b" "${C_RESET}"
-  printf "%b" "${C_CYAN}${C_BOLD}"; box_line "记录条数：${n}"; printf "%b" "${C_RESET}"
+  printf "%b" "${C_CYAN}${C_BOLD}"; box_line "Wallet dashboard"; printf "%b" "${C_RESET}"
+  printf "%b" "${C_CYAN}${C_BOLD}"; box_line "Current balance: $(fmt_money "$bal")"; printf "%b" "${C_RESET}"
+  printf "%b" "${C_CYAN}${C_BOLD}"; box_line "Total income:    $(fmt_money "$inc")"; printf "%b" "${C_RESET}"
+  printf "%b" "${C_CYAN}${C_BOLD}"; box_line "Total spend:     $(fmt_money "$spend")"; printf "%b" "${C_RESET}"
+  printf "%b" "${C_CYAN}${C_BOLD}"; box_line "Entries:         ${n}"; printf "%b" "${C_RESET}"
   printf "%b" "${C_CYAN}${C_BOLD}"; box_bottom; printf "%b" "${C_RESET}"
 
   say "$(pep_talk)"
   say ""
-  say "${C_BOLD}最近 ${SHOW_TAIL} 笔：${C_RESET}"
+  say "${C_BOLD}Recent ${SHOW_TAIL}:${C_RESET}"
 
-  # 打印最近记录（不含表头），并做简单着色
-  # 兼容 mac 的 tail：tail -n N
+  # Print recent entries (no header) with basic coloring
   awk -F'\t' -v N="$SHOW_TAIL" -v cr="$C_RED" -v cg="$C_GREEN" -v cy="$C_YELLOW" -v cd="$C_DIM" -v cb="$C_BOLD" -v ce="$C_RESET" '
     NR==1{next}
     {lines[NR]=$0; count++}
@@ -348,13 +348,13 @@ cmd_show() {
         d=f[1]; tt=f[2]; a=f[3]; c=f[4]; b=f[5]
         stamp = d " " tt
         if(a=="MOD"){
-          printf "%s•%s %s%s%s  %s%s%s  %s(余额=%s)%s  %s\n", cd, ce, cb, "[MOD]", ce, cd, stamp, ce, cd, b, ce, c
+          printf "%s•%s %s%s%s  %s%s%s  %s(balance=%s)%s  %s\n", cd, ce, cb, "[MOD]", ce, cd, stamp, ce, cd, b, ce, c
         } else if((a+0)>=0){
           v=a+0
-          printf "%s•%s %s+%.2f%s  %s%s%s  %s(余额=%s)%s  %s\n", cd, ce, cg, v, ce, cd, stamp, ce, cd, b, ce, c
+          printf "%s•%s %s+%.2f%s  %s%s%s  %s(balance=%s)%s  %s\n", cd, ce, cg, v, ce, cd, stamp, ce, cd, b, ce, c
         } else {
           v=a+0
-          printf "%s•%s %s%.2f%s  %s%s%s  %s(余额=%s)%s  %s\n", cd, ce, cy, v, ce, cd, stamp, ce, cd, b, ce, c
+          printf "%s•%s %s%.2f%s  %s%s%s  %s(balance=%s)%s  %s\n", cd, ce, cy, v, ce, cd, stamp, ce, cd, b, ce, c
         }
       }
     }
@@ -362,12 +362,12 @@ cmd_show() {
 }
 
 clear_screen() {
-  # 兼容性清屏：不依赖 clear 命令
+  # Portable clear (no dependency on `clear`)
   printf "\033[2J\033[H"
 }
 
 pause_any_key() {
-  say "${C_DIM}（按任意键继续…）${C_RESET}"
+  say "${C_DIM}(press any key to continue...)${C_RESET}"
   read -rsn1 _ || true
 }
 
@@ -381,11 +381,11 @@ repeat_char() {
   printf "%s" "$out"
 }
 
-BOX_INNER_WIDTH="${BILL_BOX_WIDTH:-56}"  # box 内部内容宽度（按“终端显示宽度”估算）
+BOX_INNER_WIDTH="${BILL_BOX_WIDTH:-56}"  # box inner width in terminal columns (approx)
 
 pad_to_width() {
-  # 从 stdin 读取一行文本，输出“显示宽度恰好为 w”的字符串（过长会截断并加省略号）
-  # 这里用 python3 计算东亚宽字符的显示宽度，修复中文导致的右边框错位。
+  # Read one line from stdin, output a string padded/truncated to display-width = w.
+  # Uses python3 + East Asian Width to fix CJK alignment.
   local w="$1"
   if command -v python3 >/dev/null 2>&1; then
     python3 -c '
@@ -423,7 +423,7 @@ pad = max(0, w - cur)
 sys.stdout.write(out + (" " * pad))
 ' "$w"
   else
-    # fallback：不做宽字符处理
+    # Fallback: no CJK width handling
     local text
     IFS= read -r text || text=""
     printf "%-*s" "$w" "$text"
@@ -431,7 +431,7 @@ sys.stdout.write(out + (" " * pad))
 }
 
 box_line() {
-  # box_line "内容" -> "│ 内容(补空格)... │"
+  # box_line "text" -> "│ text(padded) │"
   local text="$1"
   local w="$BOX_INNER_WIDTH"
   local padded
@@ -450,7 +450,7 @@ box_bottom() {
 }
 
 get_months_sorted() {
-  # 输出唯一月份列表（YYYY-MM），按字典序排序（等价于时间顺序）
+  # Print unique months (YYYY-MM), sorted lexicographically (same as chronological)
   # shellcheck disable=SC2016
   awk -F'\t' 'NR==1{next} {print substr($1,1,7)}' "$LEDGER_FILE" | sort -u
 }
@@ -458,7 +458,7 @@ get_months_sorted() {
 render_month_page() {
   local month="$1"
 
-  # 拉取当前月份记录（包含源文件行号，方便 edit/delete）
+  # Collect records for this month (also keep source line number for edit/delete)
   local records
   records="$(awk -F'\t' -v m="$month" '
     NR==1{next}
@@ -474,7 +474,7 @@ render_month_page() {
     srcn+=("$nr"); dates+=("$d"); times+=("$tt"); amts+=("$a"); cmts+=("$c"); bals+=("$b")
   done <<<"$records"
 
-  # 统计本月
+  # Monthly stats
   local mstats
   mstats="$(awk -F'\t' -v m="$month" '
     NR==1{next}
@@ -493,17 +493,17 @@ render_month_page() {
   net="$(cut -f3 <<<"$mstats")"
   cnt="$(cut -f4 <<<"$mstats")"
 
-  # 统一用固定宽度的 box，避免右侧边框错位
+  # Fixed-width box (alignment-safe)
   printf "%b" "${C_CYAN}${C_BOLD}"; box_top; printf "%b" "${C_RESET}"
-  printf "%b" "${C_CYAN}${C_BOLD}"; box_line "${month} 月账单"; printf "%b" "${C_RESET}"
-  # 注意：不要在 box_line 文本里插入颜色控制符，否则会影响宽度计算导致错位
-  printf "%b" "${C_CYAN}${C_BOLD}"; box_line "本月收入：$(fmt_money "$inc")  本月支出：$(fmt_money "$sp")  净额：$(fmt_money "$net")"; printf "%b" "${C_RESET}"
-  printf "%b" "${C_CYAN}${C_BOLD}"; box_line "记录条数：${cnt}"; printf "%b" "${C_RESET}"
+  printf "%b" "${C_CYAN}${C_BOLD}"; box_line "${month} monthly statement"; printf "%b" "${C_RESET}"
+  # Do not embed color control codes inside box_line text (would break width calculation)
+  printf "%b" "${C_CYAN}${C_BOLD}"; box_line "Income: $(fmt_money "$inc")  Spend: $(fmt_money "$sp")  Net: $(fmt_money "$net")"; printf "%b" "${C_RESET}"
+  printf "%b" "${C_CYAN}${C_BOLD}"; box_line "Entries: ${cnt}"; printf "%b" "${C_RESET}"
   printf "%b" "${C_CYAN}${C_BOLD}"; box_bottom; printf "%b" "${C_RESET}"
   printf "\n"
 
-  # 表头（列对齐）
-  printf "%b\n" "${C_BOLD}#   日期        时间      金额        余额         备注${C_RESET}"
+  # Table header
+  printf "%b\n" "${C_BOLD}#   Date        Time      Amount      Balance      Comment${C_RESET}"
   printf "%b\n" "${C_DIM}----------------------------------------------------------------${C_RESET}"
 
   local i a
@@ -517,7 +517,7 @@ render_month_page() {
     cmt="${cmts[$i]}"
     local amt_disp=""
 
-    # 备注太长就截断，避免破坏表格（宽度按字节，中文可能仍略有偏差）
+    # Truncate very long comments to keep the table readable
     if (( ${#cmt} > 28 )); then
       cmt="${cmt:0:27}…"
     fi
@@ -542,7 +542,7 @@ render_month_page() {
   done
 
   say ""
-  say "${C_DIM}按键：${C_RESET}[n]下一月  [p]上一月  [e]修改  [d]删除  [q]退出  [?]提示"
+  say "${C_DIM}Keys:${C_RESET} [n]next  [p]prev  [e]edit  [d]delete  [q]quit  [?]help"
 }
 
 ledger_delete_src_line() {
@@ -563,10 +563,10 @@ ledger_edit_src_line() {
   local new_date="${4:-}"
 
   [[ -n "$target" ]] || return 1
-  is_signed_number "$new_amt" || die "修改失败：金额需要带 + 或 -（例如：+88 或 -12.5）"
-  [[ -n "$new_cmt" ]] || die "修改失败：备注不能为空～"
+  is_signed_number "$new_amt" || die "Edit failed: amount must start with + or - (e.g. +88 or -12.5)"
+  [[ -n "$new_cmt" ]] || die "Edit failed: comment cannot be empty."
   if [[ -n "$new_date" ]] && ! is_mmdd "$new_date"; then
-    die "修改失败：日期格式需要是 MM/dd（例如：05/13）"
+    die "Edit failed: date must be MM/dd (e.g. 05/13)"
   fi
 
   local ts tmp
@@ -579,7 +579,7 @@ ledger_edit_src_line() {
     {
       d=$1; tt=$2; a=$3; c=$4; b=$5
       if(a=="MOD"){
-        # 先不允许修改 MOD 行，避免搞乱余额（后续真需要再加）
+        # Do not allow editing MOD rows for now (keeps balance logic sane)
         print $0
         next
       }
@@ -599,7 +599,7 @@ ledger_edit_src_line() {
 cmd_show_all() {
   ensure_data
 
-  # 收集月份列表（按月份排序：YYYY-MM）
+  # Month list (sorted by YYYY-MM)
   local months_raw
   months_raw="$(get_months_sorted)"
   local -a months=()
@@ -609,18 +609,18 @@ cmd_show_all() {
   done <<<"$months_raw"
 
   if (( ${#months[@]} == 0 )); then
-    say "${C_YELLOW}${C_BOLD}还没有任何记录哦～${C_RESET} 先来一笔：bill +10 零花钱"
+    say "${C_YELLOW}${C_BOLD}No entries yet.${C_RESET} Try: bill +10 \"pocket money\""
     return 0
   fi
 
-  local idx=$(( ${#months[@]} - 1 ))  # 默认停在最新月份（数组末尾）
+  local idx=$(( ${#months[@]} - 1 ))  # start at the newest month
 
   while true; do
     clear_screen
     local cur="${months[$idx]}"
     render_month_page "$cur"
-    say "${C_DIM}页码：$((idx+1))/${#months[@]}（提示：越靠后越新）${C_RESET}"
-    printf "%b" "${C_BOLD}请选择操作键：${C_RESET}"
+    say "${C_DIM}Page: $((idx+1))/${#months[@]} (higher = newer)${C_RESET}"
+    printf "%b" "${C_BOLD}Choose an action key: ${C_RESET}"
     local key=""
     read -rsn1 key || true
     say ""
@@ -640,23 +640,23 @@ cmd_show_all() {
         fi
         ;;
       "?")
-        say "${C_CYAN}${C_BOLD}小提示${C_RESET}"
-        say "  - 这是按“月份”分页的账单浏览器～"
-        say "  - [e] 修改：先按 e，再输入编号，然后按“<+/-> 备注 [MM/dd]”输入新内容"
-        say "  - [d] 删除：先按 d，再输入编号，立刻删除（会自动重算余额）"
+        say "${C_CYAN}${C_BOLD}Help${C_RESET}"
+        say "  - This is a monthly pager for your ledger."
+        say "  - [e] Edit: press e, enter a row number, then input \"<+/-> <comment...> [MM/dd]\"."
+        say "  - [d] Delete: press d, enter a row number (balances will be recalculated)."
         pause_any_key
         ;;
       "d")
-        say "${C_YELLOW}${C_BOLD}删除模式${C_RESET}：请输入要删除的编号（当前页从 1 开始）"
-        printf "%b" "${C_BOLD}编号：${C_RESET}"
+        say "${C_YELLOW}${C_BOLD}Delete mode${C_RESET}: enter the row number on this page (starting from 1)"
+        printf "%b" "${C_BOLD}Row #: ${C_RESET}"
         local num=""
         read -r num || true
         if [[ ! "$num" =~ ^[0-9]+$ ]]; then
-          say "${C_RED}编号得是数字哦～${C_RESET}"
+          say "${C_RED}Row number must be a number.${C_RESET}"
           pause_any_key
           continue
         fi
-        # 根据当前月重新取一次映射（避免删/改后错位）
+        # Rebuild mapping for this month (avoid drift after edits/deletes)
         local map
         map="$(awk -F'\t' -v m="$cur" '
           NR==1{next}
@@ -667,7 +667,7 @@ cmd_show_all() {
           [[ -n "$line" ]] && maparr+=("$line")
         done <<<"$map"
         if (( num < 1 || num > ${#maparr[@]} )); then
-          say "${C_RED}超出范围啦～ 当前页编号范围：1..${#maparr[@]}${C_RESET}"
+          say "${C_RED}Out of range. Valid rows: 1..${#maparr[@]}${C_RESET}"
           pause_any_key
           continue
         fi
@@ -675,29 +675,29 @@ cmd_show_all() {
         local kind
         kind="$(awk -F'\t' -v t="$target" 'NR==t{print $3}' "$LEDGER_FILE")"
         if [[ "$kind" == "MOD" ]]; then
-          say "${C_RED}这条是“余额调整（MOD）”记录，不建议删除哦～${C_RESET}"
+          say "${C_RED}This is a MOD (balance override) row. Deleting is disabled.${C_RESET}"
           pause_any_key
           continue
         fi
         ledger_delete_src_line "$target"
-        # 刷新月份列表（删除可能导致某个月空了）
+        # Refresh month list (deleting might empty a month)
         months_raw="$(get_months_sorted)"
         months=(); while IFS= read -r m; do [[ -n "$m" ]] && months+=("$m"); done <<<"$months_raw"
         if (( ${#months[@]} == 0 )); then
-          say "${C_GREEN}删完啦～账本清空了！从今天重新开始也很酷～${C_RESET}"
+          say "${C_GREEN}All cleared. Fresh starts can be awesome.${C_RESET}"
           break
         fi
         if (( idx >= ${#months[@]} )); then idx=$(( ${#months[@]} - 1 )); fi
-        say "${C_GREEN}${C_BOLD}已删除✅${C_RESET}（余额已自动重算）"
+        say "${C_GREEN}${C_BOLD}Deleted ✅${C_RESET} (balances recalculated)"
         pause_any_key
         ;;
       "e")
-        say "${C_CYAN}${C_BOLD}修改模式${C_RESET}：先输入要修改的编号（当前页从 1 开始）"
-        printf "%b" "${C_BOLD}编号：${C_RESET}"
+        say "${C_CYAN}${C_BOLD}Edit mode${C_RESET}: enter the row number on this page (starting from 1)"
+        printf "%b" "${C_BOLD}Row #: ${C_RESET}"
         local num=""
         read -r num || true
         if [[ ! "$num" =~ ^[0-9]+$ ]]; then
-          say "${C_RED}编号得是数字哦～${C_RESET}"
+          say "${C_RED}Row number must be a number.${C_RESET}"
           pause_any_key
           continue
         fi
@@ -711,7 +711,7 @@ cmd_show_all() {
           [[ -n "$line" ]] && maparr+=("$line")
         done <<<"$map"
         if (( num < 1 || num > ${#maparr[@]} )); then
-          say "${C_RED}超出范围啦～ 当前页编号范围：1..${#maparr[@]}${C_RESET}"
+          say "${C_RED}Out of range. Valid rows: 1..${#maparr[@]}${C_RESET}"
           pause_any_key
           continue
         fi
@@ -720,32 +720,32 @@ cmd_show_all() {
         local kind
         kind="$(awk -F'\t' -v t="$target" 'NR==t{print $3}' "$LEDGER_FILE")"
         if [[ "$kind" == "MOD" ]]; then
-          say "${C_RED}这条是“余额调整（MOD）”记录，暂不支持修改哦～${C_RESET}"
+          say "${C_RED}This is a MOD (balance override) row. Editing is disabled.${C_RESET}"
           pause_any_key
           continue
         fi
-        # 读取原记录，给个提示
+        # Show original row
         local old
         old="$(awk -F'\t' -v t="$target" 'NR==t{printf "%s %s %s %s\n",$1,$2,$3,$4}' "$LEDGER_FILE")"
-        say "${C_DIM}原记录：${old}${C_RESET}"
-        say "${C_CYAN}请输入新内容（格式：<+/-> <comment...> [MM/dd]）${C_RESET}"
-        say "${C_DIM}例如：-35.5 晚饭 05/13${C_RESET}"
-        printf "%b" "${C_BOLD}新内容：${C_RESET}"
+        say "${C_DIM}Original: ${old}${C_RESET}"
+        say "${C_CYAN}Enter new content (format: <+/-> <comment...> [MM/dd])${C_RESET}"
+        say "${C_DIM}Example: -35.5 dinner 05/13${C_RESET}"
+        printf "%b" "${C_BOLD}New: ${C_RESET}"
         local input=""
         IFS= read -r input || true
         if [[ -z "$input" ]]; then
-          say "${C_YELLOW}空输入～已取消修改。${C_RESET}"
+          say "${C_YELLOW}Empty input — cancelled.${C_RESET}"
           pause_any_key
           continue
         fi
-        # 解析输入
+        # Parse input
         local -a arr=()
         read -r -a arr <<<"$input"
         local new_amt="${arr[0]:-}"
         local new_date=""
         local new_cmt=""
         if (( ${#arr[@]} < 2 )); then
-          say "${C_RED}格式不完整哦～至少要有金额和备注。${C_RESET}"
+          say "${C_RED}Invalid format. Need at least amount + comment.${C_RESET}"
           pause_any_key
           continue
         fi
@@ -756,48 +756,47 @@ cmd_show_all() {
           new_cmt="$(join_by_space "${arr[@]:1}")"
         fi
         ledger_edit_src_line "$target" "$new_amt" "$new_cmt" "$new_date"
-        # 刷新月份列表（修改日期可能跨月）
+        # Refresh month list (editing date might move rows across months)
         months_raw="$(get_months_sorted)"
         months=(); while IFS= read -r m; do [[ -n "$m" ]] && months+=("$m"); done <<<"$months_raw"
         if (( idx >= ${#months[@]} )); then idx=$(( ${#months[@]} - 1 )); fi
-        say "${C_GREEN}${C_BOLD}已修改✅${C_RESET}（余额已自动重算）"
+        say "${C_GREEN}${C_BOLD}Updated ✅${C_RESET} (balances recalculated)"
         pause_any_key
         ;;
       *)
-        # 其他按键忽略
+        # Ignore other keys
         ;;
     esac
   done
 }
 
 cmd_doctor() {
-  say "${C_CYAN}${C_BOLD}╭─ bill 环境自检 ─────────────────────────╮${C_RESET}"
-  say "${C_CYAN}${C_BOLD}│${C_RESET} bill 路径： ${C_BOLD}$0${C_RESET}"
-  say "${C_CYAN}${C_BOLD}│${C_RESET} 当前 shell：${C_BOLD}${SHELL:-未知}${C_RESET}"
-  say "${C_CYAN}${C_BOLD}│${C_RESET} bash 版本： ${C_BOLD}${BASH_VERSION:-未在 bash 中}${C_RESET}"
-  say "${C_CYAN}${C_BOLD}│${C_RESET} bash 路径： ${C_BOLD}$(command -v bash 2>/dev/null || printf "未找到")${C_RESET}"
-  say "${C_CYAN}${C_BOLD}│${C_RESET} awk  路径： ${C_BOLD}$(command -v awk 2>/dev/null || printf "未找到")${C_RESET}"
-  say "${C_CYAN}${C_BOLD}│${C_RESET} 数据目录： ${C_BOLD}${DATA_DIR}${C_RESET}"
+  say "${C_CYAN}${C_BOLD}╭─ bill environment check ────────────────╮${C_RESET}"
+  say "${C_CYAN}${C_BOLD}│${C_RESET} bill path:   ${C_BOLD}$0${C_RESET}"
+  say "${C_CYAN}${C_BOLD}│${C_RESET} current shell:${C_BOLD}${SHELL:-unknown}${C_RESET}"
+  say "${C_CYAN}${C_BOLD}│${C_RESET} bash version:${C_BOLD}${BASH_VERSION:-not in bash}${C_RESET}"
+  say "${C_CYAN}${C_BOLD}│${C_RESET} bash path:   ${C_BOLD}$(command -v bash 2>/dev/null || printf "not found")${C_RESET}"
+  say "${C_CYAN}${C_BOLD}│${C_RESET} awk path:    ${C_BOLD}$(command -v awk 2>/dev/null || printf "not found")${C_RESET}"
+  say "${C_CYAN}${C_BOLD}│${C_RESET} data dir:    ${C_BOLD}${DATA_DIR}${C_RESET}"
   if [[ -f "$BAL_FILE" ]]; then
-    say "${C_CYAN}${C_BOLD}│${C_RESET} 余额文件： ${C_DIM}存在${C_RESET} (${BAL_FILE})"
+    say "${C_CYAN}${C_BOLD}│${C_RESET} balance file:${C_DIM} exists${C_RESET} (${BAL_FILE})"
   else
-    say "${C_CYAN}${C_BOLD}│${C_RESET} 余额文件： ${C_YELLOW}不存在${C_RESET}（首次使用属正常）"
+    say "${C_CYAN}${C_BOLD}│${C_RESET} balance file:${C_YELLOW} missing${C_RESET} (normal on first run)"
   fi
   if [[ -f "$LEDGER_FILE" ]]; then
-    say "${C_CYAN}${C_BOLD}│${C_RESET} 账本文件： ${C_DIM}存在${C_RESET} (${LEDGER_FILE})"
+    say "${C_CYAN}${C_BOLD}│${C_RESET} ledger file: ${C_DIM}exists${C_RESET} (${LEDGER_FILE})"
   else
-    say "${C_CYAN}${C_BOLD}│${C_RESET} 账本文件： ${C_YELLOW}不存在${C_RESET}（首次使用属正常）"
+    say "${C_CYAN}${C_BOLD}│${C_RESET} ledger file: ${C_YELLOW}missing${C_RESET} (normal on first run)"
   fi
   say "${C_CYAN}${C_BOLD}╰────────────────────────────────────────╯${C_RESET}"
-  say "${C_DIM}如果你在 zsh 里输入 bill ? 报错，试试：bill \\? 或 bill help${C_RESET}"
+  say "${C_DIM}Note: in zsh, '?' is a glob. Use: bill \\?  or  bill help${C_RESET}"
 }
 
 main() {
-  # 如果用户用 zsh 运行：`bill ...` 仍会因为 shebang 调用 bash
-  # 这里额外做一个“你确实在 bash 里”的友好自检提示（不影响运行）
+  # Even if launched from zsh, the shebang forces bash.
+  # The check below is just a friendly hint (should rarely trigger).
   if [[ -z "${BASH_VERSION:-}" ]]; then
-    # 理论上不应发生，因为 shebang 指定了 bash
-    say "${C_YELLOW}${C_BOLD}提示：${C_RESET}${C_YELLOW}当前不是 bash，建议用 bash 运行：bash bill ...${C_RESET}"
+    say "${C_YELLOW}${C_BOLD}Note:${C_RESET}${C_YELLOW} not running in bash. Try: bash bill ...${C_RESET}"
   fi
 
   local cmd="${1:-}"
@@ -820,7 +819,7 @@ main() {
       cmd_doctor
       ;;
     *)
-      # 默认认为是：bill <+/-money> <comment...>
+      # Default: bill <+/-money> <comment...> [MM/dd]
       local amt="$1"
       shift || true
       cmd_add "$amt" "$@"
